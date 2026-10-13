@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>หลบรถตุ๊กตุ๊ก</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1b2f; overflow: hidden; touch-action: none; }
+  body { display: flex; align-items: center; justify-content: center; font-family: "Leelawadee UI", Tahoma, sans-serif; }
+  canvas { height: 100vh; max-width: 100vw; aspect-ratio: 9 / 16; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c" width="540" height="960"></canvas>
+<script>
+// หลบรถตุ๊กตุ๊ก — v0.1 ต้นแบบ: 3 เลน, แตะซ้าย/ขวา หรือกดลูกศร
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const LANES = 3, ROAD_X = 60, ROAD_W = W - 120, LANE_W = ROAD_W / LANES;
+const laneX = i => ROAD_X + LANE_W * i + LANE_W / 2;
+const TUK_COLORS = ['#2ecc71', '#e74c3c', '#3498db', '#f1c40f', '#9b59b6'];
+
+let state, best = 0;
+try { best = +localStorage.getItem('tuk-best') || 0; } catch (e) {}
+
+function reset() {
+  state = {
+    mode: 'title',        // title | play | over
+    lane: 1, px: laneX(1),
+    tuks: [], spawnT: 0, speed: 360,
+    score: 0, dash: 0, shake: 0,
+  };
+}
+reset();
+
+function move(dir) {
+  if (state.mode !== 'play') { start(); return; }
+  state.lane = Math.max(0, Math.min(LANES - 1, state.lane + dir));
+}
+function start() {
+  const keep = best;
+  reset(); best = keep;
+  state.mode = 'play';
+}
+
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'a') move(-1);
+  else if (e.key === 'ArrowRight' || e.key === 'd') move(1);
+  else if (e.key === ' ' || e.key === 'Enter') { if (state.mode !== 'play') start(); }
+});
+cv.addEventListener('pointerdown', e => {
+  const r = cv.getBoundingClientRect();
+  move(e.clientX - r.left < r.width / 2 ? -1 : 1);
+});
+
+function spawn() {
+  // เว้นอย่างน้อย 1 เลนว่างเสมอ เพื่อให้หลบได้จริง
+  const lanes = [0, 1, 2].sort(() => Math.random() - 0.5);
+  const n = state.score > 30 && Math.random() < 0.35 ? 2 : 1;
+  for (let i = 0; i < n; i++) {
+    state.tuks.push({
+      lane: lanes[i], y: -120,
+      color: TUK_COLORS[Math.floor(Math.random() * TUK_COLORS.length)],
+      wob: Math.random() * 6,
+    });
+  }
+}
+
+function update(dt) {
+  state.dash = (state.dash + state.speed * dt) % 80;
+  state.shake = Math.max(0, state.shake - dt * 30);
+  if (state.mode !== 'play') return;
+
+  state.px += (laneX(state.lane) - state.px) * Math.min(1, dt * 18);
+  state.speed = 360 + state.score * 6;
+  state.score += dt;
+
+  state.spawnT -= dt;
+  if (state.spawnT <= 0) {
+    spawn();
+    state.spawnT = Math.max(0.45, 1.1 - state.score * 0.012);
+  }
+  for (const t of state.tuks) { t.y += state.speed * dt; t.wob += dt * 10; }
+  state.tuks = state.tuks.filter(t => t.y < H + 150);
+
+  // ชน: เทียบกล่องสี่เหลี่ยมแบบหลวม ๆ ให้รู้สึกแฟร์
+  const py = H - 170;
+  for (const t of state.tuks) {
+    if (Math.abs(laneX(t.lane) - state.px) < LANE_W * 0.55 && Math.abs(t.y - py) < 95) {
+      state.mode = 'over'; state.shake = 12;
+      if (state.score > best) {
+        best = Math.floor(state.score);
+        try { localStorage.setItem('tuk-best', best); } catch (e) {}
+      }
+    }
+  }
+}
+
+function drawRoad() {
+  ctx.fillStyle = '#3a7d44'; ctx.fillRect(0, 0, W, H);           // หญ้าข้างทาง
+  ctx.fillStyle = '#444'; ctx.fillRect(ROAD_X, 0, ROAD_W, H);      // ถนน
+  ctx.fillStyle = '#ddd';
+  for (let i = 1; i < LANES; i++) {
+    const x = ROAD_X + LANE_W * i - 3;
+    for (let y = -80 + state.dash; y < H; y += 80) ctx.fillRect(x, y, 6, 44);
+  }
+  ctx.fillStyle = '#f5f5f5';
+  ctx.fillRect(ROAD_X - 6, 0, 6, H); ctx.fillRect(ROAD_X + ROAD_W, 0, 6, H);
+}
+
+function drawTuk(t) {
+  const x = laneX(t.lane), y = t.y + Math.sin(t.wob) * 2;
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(-48, -60, 96, 130);  // เงา
+  ctx.fillStyle = t.color;               // หลังคา
+  ctx.beginPath(); ctx.roundRect(-46, -70, 92, 60, 14); ctx.fill();
+  ctx.fillStyle = '#222';                // ตัวรถ
+  ctx.beginPath(); ctx.roundRect(-40, -10, 80, 70, 10); ctx.fill();
+  ctx.fillStyle = t.color;
+  ctx.beginPath(); ctx.roundRect(-30, 40, 60, 30, 8); ctx.fill();   // หน้ารถ (หันลงมาหาเรา)
+  ctx.fillStyle = '#fff59d';             // ไฟหน้า
+  ctx.beginPath(); ctx.arc(0, 66, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#111';                // ล้อ
+  ctx.fillRect(-50, 30, 10, 26); ctx.fillRect(40, 30, 10, 26); ctx.fillRect(-6, 70, 12, 14);
+  ctx.restore();
+}
+
+function drawPlayer() {
+  const x = state.px, y = H - 170;
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(-20, -40, 40, 100);
+  ctx.fillStyle = '#111'; ctx.fillRect(-7, -60, 14, 26); ctx.fillRect(-7, 40, 14, 26); // ล้อ
+  ctx.fillStyle = '#ff7043';             // ตัวมอเตอร์ไซค์
+  ctx.beginPath(); ctx.roundRect(-16, -40, 32, 84, 10); ctx.fill();
+  ctx.fillStyle = '#1565c0';             // คนขี่ (หมวกกันน็อก)
+  ctx.beginPath(); ctx.arc(0, 6, 15, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#90caf9'; ctx.fillRect(-10, -6, 20, 6);
+  ctx.restore();
+}
+
+function text(s, y, size, color = '#fff') {
+  ctx.font = `bold ${size}px "Leelawadee UI", Tahoma, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.lineWidth = size / 6; ctx.strokeStyle = '#000'; ctx.strokeText(s, W / 2, y);
+  ctx.fillStyle = color; ctx.fillText(s, W / 2, y);
+}
+
+function draw() {
+  ctx.save();
+  if (state.shake) ctx.translate((Math.random() - .5) * state.shake, (Math.random() - .5) * state.shake);
+  drawRoad();
+  state.tuks.forEach(drawTuk);
+  drawPlayer();
+  ctx.restore();
+
+  if (state.mode === 'play') {
+    text(Math.floor(state.score) + ' ม.', 70, 48, '#ffeb3b');
+  } else if (state.mode === 'title') {
+    text('หลบรถตุ๊กตุ๊ก', H / 2 - 80, 64, '#ffeb3b');
+    text('แตะซ้าย / ขวา เพื่อเปลี่ยนเลน', H / 2, 28);
+    text('แตะเพื่อเริ่ม', H / 2 + 60, 34);
+    if (best) text('สถิติ ' + best + ' ม.', H / 2 + 120, 26, '#b2ff59');
+  } else {
+    text('โดนชน!', H / 2 - 80, 72, '#ff5252');
+    text('ไปได้ ' + Math.floor(state.score) + ' ม.', H / 2, 40);
+    text('สถิติ ' + best + ' ม.', H / 2 + 50, 28, '#b2ff59');
+    text('แตะเพื่อเล่นใหม่', H / 2 + 120, 32);
+  }
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  update(dt); draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
