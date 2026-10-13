@@ -13,13 +13,42 @@
 <body>
 <canvas id="c" width="540" height="960"></canvas>
 <script>
-// หลบรถตุ๊กตุ๊ก — v0.1 ต้นแบบ: 3 เลน, แตะซ้าย/ขวา หรือกดลูกศร
+// หลบรถตุ๊กตุ๊ก — v0.2: เสียงจากโค้ด + ฉากถนนไทย
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height;
 const LANES = 3, ROAD_X = 60, ROAD_W = W - 120, LANE_W = ROAD_W / LANES;
 const laneX = i => ROAD_X + LANE_W * i + LANE_W / 2;
 const TUK_COLORS = ['#2ecc71', '#e74c3c', '#3498db', '#f1c40f', '#9b59b6'];
+
+// เสียงสร้างด้วย Web Audio ทั้งหมด (ไม่มีไฟล์เสียง ไม่ติดลิขสิทธิ์)
+let ac = null;
+function audio() {
+  if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (ac && ac.state === 'suspended') ac.resume();
+  return ac;
+}
+function tone(freq, dur, type = 'square', vol = 0.15, slide = 0) {
+  const a = audio(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain(), t = a.currentTime;
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.linearRampToValueAtTime(freq + slide, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(a.destination); o.start(t); o.stop(t + dur);
+}
+const sfx = {
+  move:  () => tone(520, 0.06, 'triangle', 0.08),
+  horn:  () => { tone(392, 0.12, 'square', 0.1); setTimeout(() => tone(392, 0.18, 'square', 0.1), 150); }, // ปี๊น ปี๊น
+  crash: () => {
+    const a = audio(); if (!a) return;
+    const len = a.sampleRate * 0.5, buf = a.createBuffer(1, len, a.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 2;
+    const src = a.createBufferSource(), g = a.createGain(); g.gain.value = 0.4;
+    src.buffer = buf; src.connect(g).connect(a.destination); src.start();
+    tone(160, 0.4, 'sawtooth', 0.15, -100);
+  },
+  start: () => { tone(523, 0.08, 'triangle', 0.1); setTimeout(() => tone(784, 0.12, 'triangle', 0.1), 90); },
+};
 
 let state, best = 0;
 try { best = +localStorage.getItem('tuk-best') || 0; } catch (e) {}
@@ -29,19 +58,22 @@ function reset() {
     mode: 'title',        // title | play | over
     lane: 1, px: laneX(1),
     tuks: [], spawnT: 0, speed: 360,
-    score: 0, dash: 0, shake: 0,
+    score: 0, dash: 0, shake: 0, scroll: 0,
+    side: [makeSide(0), makeSide(1)],
   };
 }
-reset();
 
 function move(dir) {
   if (state.mode !== 'play') { start(); return; }
-  state.lane = Math.max(0, Math.min(LANES - 1, state.lane + dir));
+  const nl = Math.max(0, Math.min(LANES - 1, state.lane + dir));
+  if (nl !== state.lane) sfx.move();
+  state.lane = nl;
 }
 function start() {
   const keep = best;
   reset(); best = keep;
   state.mode = 'play';
+  sfx.start();
 }
 
 addEventListener('keydown', e => {
@@ -62,13 +94,14 @@ function spawn() {
     state.tuks.push({
       lane: lanes[i], y: -120,
       color: TUK_COLORS[Math.floor(Math.random() * TUK_COLORS.length)],
-      wob: Math.random() * 6,
+      wob: Math.random() * 6, honked: false,
     });
   }
 }
 
 function update(dt) {
   state.dash = (state.dash + state.speed * dt) % 80;
+  state.scroll += state.speed * dt;
   state.shake = Math.max(0, state.shake - dt * 30);
   if (state.mode !== 'play') return;
 
@@ -81,14 +114,18 @@ function update(dt) {
     spawn();
     state.spawnT = Math.max(0.45, 1.1 - state.score * 0.012);
   }
-  for (const t of state.tuks) { t.y += state.speed * dt; t.wob += dt * 10; }
+  for (const t of state.tuks) {
+    t.y += state.speed * dt; t.wob += dt * 10;
+    // บีบแตรเมื่อตุ๊กตุ๊กเข้าใกล้เลนเรา
+    if (!t.honked && t.lane === state.lane && t.y > H * 0.35) { t.honked = true; sfx.horn(); }
+  }
   state.tuks = state.tuks.filter(t => t.y < H + 150);
 
   // ชน: เทียบกล่องสี่เหลี่ยมแบบหลวม ๆ ให้รู้สึกแฟร์
   const py = H - 170;
   for (const t of state.tuks) {
     if (Math.abs(laneX(t.lane) - state.px) < LANE_W * 0.55 && Math.abs(t.y - py) < 95) {
-      state.mode = 'over'; state.shake = 12;
+      state.mode = 'over'; state.shake = 12; sfx.crash();
       if (state.score > best) {
         best = Math.floor(state.score);
         try { localStorage.setItem('tuk-best', best); } catch (e) {}
@@ -97,16 +134,64 @@ function update(dt) {
   }
 }
 
+// ฉากข้างทาง: ร้านค้าห้องแถว ต้นไม้ เสาไฟ เลื่อนตามความเร็ว
+const SHOPS = ['ข้าวมันไก่', 'ก๋วยเตี๋ยว', 'ชานมเย็น', 'ส้มตำ', 'ร้านกาแฟ', 'ซ่อมรถ', 'โชห่วย', 'หมูปิ้ง', 'ขายส่ง', 'ร้านยา'];
+const AWN = ['#e53935', '#fb8c00', '#1e88e5', '#43a047', '#8e24aa', '#00897b'];
+const SEG = 160;
+function makeSide(seed) {
+  // 40 ช่อง วนซ้ำ: ร้าน / ต้นไม้ / เสาไฟ
+  const r = n => { seed = (seed * 9301 + 49297) % 233280; return Math.floor(seed / 233280 * n); };
+  return Array.from({ length: 40 }, () => {
+    const k = r(10);
+    return k < 6 ? { kind: 'shop', name: SHOPS[r(SHOPS.length)], c: AWN[r(AWN.length)] }
+         : k < 9 ? { kind: 'tree' } : { kind: 'pole' };
+  });
+}
+function drawSide(items, left) {
+  const x0 = left ? 0 : ROAD_X + ROAD_W + 6, w = ROAD_X - 6;
+  ctx.fillStyle = '#bdb6a8'; ctx.fillRect(x0, 0, w, H);            // ฟุตบาท
+  const off = state.scroll % SEG, base = Math.floor(state.scroll / SEG);
+  for (let i = -1; i <= Math.ceil(H / SEG); i++) {
+    const it = items[((base - i) % items.length + items.length) % items.length];
+    const y = i * SEG + off;
+    ctx.save(); ctx.translate(x0 + w / 2, y + SEG / 2);
+    if (!left) ctx.scale(-1, 1);
+    if (it.kind === 'shop') {
+      ctx.fillStyle = '#f3e5ab'; ctx.fillRect(-w / 2, -SEG / 2 + 4, w, SEG - 8);   // ตึก
+      for (let j = 0; j < 6; j++) {                                                 // กันสาดลายทาง
+        ctx.fillStyle = j % 2 ? '#fff' : it.c;
+        ctx.fillRect(w / 2 - 16, -SEG / 2 + 4 + j * (SEG - 8) / 6, 16, (SEG - 8) / 6);
+      }
+      ctx.rotate(left ? -Math.PI / 2 : Math.PI / 2);                               // ป้ายตัวหนังสือแนวตั้ง
+      if (!left) ctx.scale(-1, 1);
+      ctx.fillStyle = it.c; ctx.fillRect(-SEG / 2 + 14, -w / 2 + 4, SEG - 28, 26);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 18px "Leelawadee UI", Tahoma, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(it.name, 0, -w / 2 + 17);
+    } else if (it.kind === 'tree') {
+      ctx.fillStyle = '#2e7d32'; ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#43a047'; ctx.beginPath(); ctx.arc(-6, -6, 16, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = '#616161'; ctx.fillRect(w / 2 - 12, -4, 8, 8);               // เสาไฟ + สายไฟ
+      ctx.strokeStyle = '#212121'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(w / 2 - 8, 0); ctx.lineTo(-w / 2, -30); ctx.moveTo(w / 2 - 8, 0); ctx.lineTo(-w / 2, 30); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
 function drawRoad() {
-  ctx.fillStyle = '#3a7d44'; ctx.fillRect(0, 0, W, H);           // หญ้าข้างทาง
+  drawSide(state.side[0], true); drawSide(state.side[1], false);
   ctx.fillStyle = '#444'; ctx.fillRect(ROAD_X, 0, ROAD_W, H);      // ถนน
   ctx.fillStyle = '#ddd';
   for (let i = 1; i < LANES; i++) {
     const x = ROAD_X + LANE_W * i - 3;
     for (let y = -80 + state.dash; y < H; y += 80) ctx.fillRect(x, y, 6, 44);
   }
-  ctx.fillStyle = '#f5f5f5';
-  ctx.fillRect(ROAD_X - 6, 0, 6, H); ctx.fillRect(ROAD_X + ROAD_W, 0, 6, H);
+  for (let y = -40 + (state.scroll % 40); y < H; y += 40) {    // ขอบฟุตบาทขาวแดง
+    ctx.fillStyle = Math.floor((y - state.scroll) / 40) % 2 ? '#fff' : '#e53935';
+    ctx.fillRect(ROAD_X - 6, y, 6, 40); ctx.fillRect(ROAD_X + ROAD_W, y, 6, 40);
+  }
 }
 
 function drawTuk(t) {
@@ -169,6 +254,7 @@ function draw() {
   }
 }
 
+reset();
 let last = performance.now();
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
